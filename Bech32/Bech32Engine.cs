@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Guillaume Bonnot and Palekhov Ilia
+/* Copyright(c) 2017 Guillaume Bonnot and Palekhov Ilia
  * Based on the work of Pieter Wuille
  * Special Thanks to adiabat
  *                  
@@ -10,7 +10,7 @@
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
  *
- * The above copyright notice and this permission notice shall be included in
+ *The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
@@ -22,15 +22,28 @@
  * THE SOFTWARE.
  */
 
+//Add Bech32M support 
+//https://github.com/bitcoin/bips/blob/master/bip-0350.mediawiki
+
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 
+
 namespace Bech32
 {
-    public static class Bech32Engine
+    public enum Bech32Encoding
     {
+        Unknown,
+        BECH32 = 1,
+        BECH32M = 2,
+    }
+
+    public static class Bech32MEngine
+    {
+        private const int BECH32M_CONST = 0x2bc830a3;
+      
         // used for polymod
         private static readonly uint[] generator = { 0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3 };
 
@@ -54,7 +67,7 @@ namespace Bech32
             -1, 29, -1, 24, 13, 25, 9, 8, 23, -1, 18, 22, 31, 27, 19, -1,
             1, 0, 3, 16, 11, 28, 12, 14, 6, 4, 2, -1, -1, -1, -1, -1
         };
-        
+
         // PolyMod takes a byte slice and returns the 32-bit BCH checksum.
         // Note that the input bytes to PolyMod need to be squashed to 5-bits tall
         // before being used in this function.  And this function will not error,
@@ -100,29 +113,32 @@ namespace Bech32
                 data = null; hrp = null; return;
             }
 
-	        // find the last "1" and split there
+            // find the last "1" and split there
             var splitLoc = adr.LastIndexOf("1");
-	        if (splitLoc == -1) {
+            if (splitLoc == -1)
+            {
                 Debug.WriteLine("1 separator not present in address");
                 data = null; hrp = null; return;
-	        }
+            }
 
-	        // hrp comes before the split
-	        hrp = adr.Substring(0,splitLoc);
+            // hrp comes before the split
+            hrp = adr.Substring(0, splitLoc);
 
-	        // get squashed data
+            // get squashed data
             var squashed = StringToSquashedBytes(adr.Substring(splitLoc + 1));
-            if (squashed == null) {
+            if (squashed == null)
+            {
                 data = null; return;
             }
 
-	        // make sure checksum works
-	        if(!VerifyChecksum(hrp, squashed)) {
+            // make sure checksum works
+            if (VerifyChecksum(hrp, squashed) == Bech32Encoding.Unknown)
+            {
                 Debug.WriteLine("Checksum invalid");
                 data = null; return;
-	        }
+            }
 
-	        // chop off checksum to return only payload
+            // chop off checksum to return only payload
             var length = squashed.Length - 6;
             data = new byte[length];
             Array.Copy(squashed, 0, data, 0, length);
@@ -146,24 +162,32 @@ namespace Bech32
             return lowAdr;
         }
 
-        private static bool VerifyChecksum(string hrp, byte[] data)
+        private static Bech32Encoding VerifyChecksum(string hrp, byte[] data)
         {
             var values = HRPExpand(hrp).Concat(data).ToArray();
             var checksum = PolyMod(values);
-	        // make sure it's 1 (from the LSB flip in CreateChecksum
-            return checksum == 1;
+            // make sure it's 1 (from the LSB flip in CreateChecksum
+            switch(checksum)
+            {
+                case 1:
+                    return Bech32Encoding.BECH32;
+                case BECH32M_CONST:
+                    return Bech32Encoding.BECH32M;
+                default:
+                    return Bech32Encoding.Unknown;
+            }
         }
 
         // on error, return null
         private static byte[] StringToSquashedBytes(string input)
         {
             byte[] squashed = new byte[input.Length];
-            
+
             for (int i = 0; i < input.Length; i++)
             {
                 var c = input[i];
                 var buffer = icharset[c];
-		        if (buffer == -1)
+                if (buffer == -1)
                 {
                     Debug.WriteLine("contains invalid character " + c);
                     return null;
@@ -175,36 +199,39 @@ namespace Bech32
         }
 
         // we encode the data and the human readable prefix
-        public static string Encode(string hrp, byte[] data)
+        public static string Encode(string hrp, byte[] data, Bech32Encoding encoding = Bech32Encoding.BECH32M)
         {
             var base5 = Bytes8to5(data);
             if (base5 == null)
                 return string.Empty;
-            return EncodeSquashed(hrp, base5);
+            return EncodeSquashed(hrp, base5, encoding);
         }
 
         // on error, return null
-        private static string EncodeSquashed(string hrp, byte[] data)
+        private static string EncodeSquashed(string hrp, byte[] data, Bech32Encoding encoding)
         {
-            var checksum = CreateChecksum(hrp, data);
+            var checksum = CreateChecksum(hrp, data, encoding);
             var combined = data.Concat(checksum).ToArray();
 
-	        // Should be squashed, return empty string if it's not.
-	        var encoded = SquashedBytesToString(combined);
+            // Should be squashed, return empty string if it's not.
+            var encoded = SquashedBytesToString(combined);
             if (encoded == null)
                 return null;
             return hrp + "1" + encoded;
         }
 
-        private static byte[] CreateChecksum(string hrp, byte[] data)
+        private static byte[] CreateChecksum(string hrp, byte[] data, Bech32Encoding encoding)
         {
             var values = HRPExpand(hrp).Concat(data).ToArray();
-	        // put 6 zero bytes on at the end
+            // put 6 zero bytes on at the end
             values = values.Concat(new byte[6]).ToArray();
-	        //get checksum for whole slice
+            //get checksum for whole slice
 
-	        // flip the LSB of the checksum data after creating it
-	        var checksum = PolyMod(values) ^ 1;
+            // flip the LSB of the checksum data after creating it
+            var checksum =
+                (encoding == Bech32Encoding.BECH32M) ?
+                PolyMod(values) ^ BECH32M_CONST :
+                PolyMod(values) ^ 1;
 
             byte[] ret = new byte[6];
             for (var i = 0; i < 6; i++)
@@ -212,7 +239,7 @@ namespace Bech32
                 // note that this is NOT the same as converting 8 to 5
                 // this is it's own expansion to 6 bytes from 4, chopping
                 // off the MSBs.
-                ret[i] = (byte) (checksum >> (5*(5 - i)) & 0x1f);
+                ret[i] = (byte)(checksum >> (5 * (5 - i)) & 0x1f);
             }
 
             return ret;
@@ -221,25 +248,25 @@ namespace Bech32
         // HRPExpand turns the human redable part into 5bit-bytes for later processing
         private static byte[] HRPExpand(string input)
         {
-            var output = new byte[(input.Length*2) + 1];
+            var output = new byte[(input.Length * 2) + 1];
 
-	        // first half is the input string shifted down 5 bits.
-	        // not much is going on there in terms of data / entropy
+            // first half is the input string shifted down 5 bits.
+            // not much is going on there in terms of data / entropy
             for (int i = 0; i < input.Length; i++)
             {
                 var c = input[i];
-                output[i] = (byte) (c >> 5);
+                output[i] = (byte)(c >> 5);
             }
 
-	        // then there's a 0 byte separator
-	        // don't need to set 0 byte in the middle, as it starts out that way
+            // then there's a 0 byte separator
+            // don't need to set 0 byte in the middle, as it starts out that way
 
-	        // second half is the input string, with the top 3 bits zeroed.
-	        // most of the data / entropy will live here.
+            // second half is the input string, with the top 3 bits zeroed.
+            // most of the data / entropy will live here.
             for (int i = 0; i < input.Length; i++)
             {
                 var c = input[i];
-                output[i + input.Length + 1] = (byte) (c & 0x1f);
+                output[i + input.Length + 1] = (byte)(c & 0x1f);
             }
             return output;
         }
@@ -296,7 +323,7 @@ namespace Bech32
                 while (bitstash >= outputWidth)
                 {
                     bitstash -= outputWidth;
-                    output.Add((byte) ((accumulator >> bitstash) & maxOutputValue));
+                    output.Add((byte)((accumulator >> bitstash) & maxOutputValue));
                 }
             }
 
@@ -305,7 +332,7 @@ namespace Bech32
             {
                 if (bitstash != 0)
                 {
-                    output.Add((byte) (accumulator << (outputWidth - bitstash) & maxOutputValue));
+                    output.Add((byte)(accumulator << (outputWidth - bitstash) & maxOutputValue));
                 }
             }
             else if (bitstash >= inputWidth || ((accumulator << (outputWidth - bitstash)) & maxOutputValue) != 0)
